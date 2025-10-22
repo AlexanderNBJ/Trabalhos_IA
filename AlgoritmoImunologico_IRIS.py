@@ -1,186 +1,197 @@
 """
-    Trabalho IA: Algoritmo Imunológico (CLONALG) - IRIS
-    Nomes:  Alexander Neves Barbosa Júnior
-            Davi Paulino Laboissiere Dantas
+    Trabalho IA:    Algoritmo Imunológico (CLONALG) - IRIS 
+                    Usando eixo 2D: petal length x petal width
+
+    Autores:    Alexander Neves Barbosa Júnior
+                Davi Paulino Laboissiere Dantas
 """
 
 import numpy as np
-import matplotlib
-matplotlib.use('Agg')
-
 import matplotlib.pyplot as plt
+from matplotlib.animation import FuncAnimation
 from sklearn.datasets import load_iris
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score
-from sklearn.decomposition import PCA
-from matplotlib.animation import FuncAnimation
 import os
 
-NUM_CLONES = 10
+NUM_CLONES = 8
 GERACOES = 30
-TAM_POP = 500
-TAXA_MUTACAO = 0.2
-FATOR_SUPERMUTACAO = 5
+TAM_POP = 300
+TAXA_MUTACAO = 0.1
+SEED = 42
+np.random.seed(SEED)
 
-def carregar_dataset():
+FEATURE_INDICES = [2, 3]  # X = petal length, Y = petal width
+N_BEST = 5
+PASTA_SAIDA = 'graficos_2d'
+
+def carregar_dataset_2d():
     iris = load_iris()
-    X, y = iris.data, iris.target
-    nomes_classes = iris.target_names
-
-    return X, y, nomes_classes
+    X_full, y = iris.data[:, FEATURE_INDICES], iris.target
+    nomes = iris.target_names
+    return X_full, y, nomes
 
 def dividir_dataset(X, y, teste=0.3):
-    return train_test_split(X, y, test_size=teste, shuffle=True, random_state=42)
+    return train_test_split(X, y, test_size=teste, shuffle=True, random_state=SEED)
 
-def inicializar_populacao(tamanho, num_atributos, num_classes):
-    return [np.random.uniform(0, 8, size=(num_classes, num_atributos)) for _ in range(tamanho)]
+def inicializar_populacao(tamanho, num_atributos, num_classes, mins, maxs):
+    pop = []
+    for _ in range(tamanho):
+        clf = np.zeros((num_classes, num_atributos))
+        for f in range(num_atributos):
+            clf[:, f] = np.random.uniform(mins[f], maxs[f], size=(num_classes,))
+        pop.append(clf)
+    return pop
 
-def afinidade(classificador, X, y):
-    predicoes = []
-    for amostra in X:
-        dist = np.linalg.norm(classificador - amostra, axis=1)
-        predicoes.append(np.argmin(dist))
-    return accuracy_score(y, predicoes)
+def fitness(individuo, X, y):
+    return sum(np.linalg.norm(individuo[y[i]] - X[i]) for i in range(len(X)))
 
-def mutar(classificador, intensidade=1.0):
-    ruido = np.random.randn(*classificador.shape) * TAXA_MUTACAO * intensidade
-    return classificador + ruido
+def fitness_por_classe(individuo, X, y, num_classes):
+    fit_classes = np.zeros(num_classes)
+    for c in range(num_classes):
+        Xc = X[y == c]
+        fit_classes[c] = sum(np.linalg.norm(individuo[c] - x) for x in Xc)
+    return fit_classes
 
-def prever(classificador, X):
-    predicoes = []
-    for amostra in X:
-        dist = np.linalg.norm(classificador - amostra, axis=1)
-        predicoes.append(np.argmin(dist))
-    return np.array(predicoes)
+def mutar(individuo, mins, maxs):
+    ruido = np.random.randn(*individuo.shape) * TAXA_MUTACAO
+    novo = individuo + ruido
+    novo = np.clip(novo, mins, maxs)
+    return novo
 
-def evoluir(X_treino, y_treino, X_teste, y_teste, num_classes, num_atributos):
-    populacao = inicializar_populacao(TAM_POP, num_atributos, num_classes)
+def selecionar_melhores(pop, X, y, k):
+    avaliacao = [(ind, fitness(ind, X, y)) for ind in pop]
+    avaliacao.sort(key=lambda x: x[1])
+    return [ind for ind, _ in avaliacao[:k]]
 
+def evoluir(X_treino, y_treino, X_teste, y_teste, num_classes, num_atributos, mins, maxs, nomes_classes):
+    populacao = inicializar_populacao(TAM_POP, num_atributos, num_classes, mins, maxs)
     historico_fitness = []
-    historico_treino = []
-    historico_teste = []
+    historico_fitness_classes = []
     melhores_classificadores = []
+    populacoes_por_geracao = []
 
     for geracao in range(GERACOES):
-        afinidades = [afinidade(clf, X_treino, y_treino) for clf in populacao]
-        melhores_idx = np.argsort(afinidades)[::-1]
-        melhores = [populacao[i] for i in melhores_idx[:5]]
+        melhores = selecionar_melhores(populacao, X_treino, y_treino, N_BEST)
+        melhor_fit = fitness(melhores[0], X_treino, y_treino)
+        media_fit = np.mean([fitness(ind, X_treino, y_treino) for ind in populacao])
 
-        melhor_fit = max(afinidades)
-        media_fit = np.mean(afinidades)
+        fit_classes = fitness_por_classe(melhores[0], X_treino, y_treino, num_classes)
         historico_fitness.append((melhor_fit, media_fit))
+        historico_fitness_classes.append(fit_classes)
 
-        melhor_clf = melhores[0]
-        historico_treino.append(afinidade(melhor_clf, X_treino, y_treino))
-        historico_teste.append(afinidade(melhor_clf, X_teste, y_teste))
-        melhores_classificadores.append(melhor_clf.copy())
+        melhores_classificadores.append(melhores[0].copy())
+        populacoes_por_geracao.append(populacao.copy())
 
         clones = []
         for clf in melhores:
             for _ in range(NUM_CLONES):
-                intensidade = FATOR_SUPERMUTACAO * (1 - afinidade(clf, X_treino, y_treino))
-                clones.append(mutar(clf, intensidade=intensidade))
+                clones.append(mutar(clf, mins, maxs))
 
         populacao = melhores + clones
-        populacao = sorted(populacao, key=lambda clf: afinidade(clf, X_treino, y_treino), reverse=True)
-        populacao = populacao[:TAM_POP]
+        if len(populacao) > TAM_POP:
+            populacao = selecionar_melhores(populacao, X_treino, y_treino, TAM_POP)
 
-        print(f"Geração {geracao+1}/{GERACOES} | Melhor Fitness: {melhor_fit:.3f} | Média: {media_fit:.3f}")
+        #fit_classes_texto = ', '.join(f"{nomes_classes[i]}: {fit_classes[i]:.3f}" for i in range(num_classes))
+        print(f"Geração {geracao+1}/{GERACOES} | Melhor Fitness: {melhor_fit} | Média: {media_fit:.3f}")
+        [print(f"{nomes_classes[i]} = {fit_classes[i]}") for i in range(num_classes)]
+        print()
 
-    return historico_fitness, historico_treino, historico_teste, melhores_classificadores
+    return historico_fitness, historico_fitness_classes, melhores_classificadores, populacoes_por_geracao
 
-def gerar_graficos(historico_fitness, historico_treino, historico_teste, nome_pasta="graficos"):
+def plotar_fitness(historico_fitness, historico_fitness_classes, nomes_classes, nome_pasta=PASTA_SAIDA):
     os.makedirs(nome_pasta, exist_ok=True)
+    geracoes = range(1, len(historico_fitness)+1)
+    melhor = [f[0] for f in historico_fitness]
+    media = [f[1] for f in historico_fitness]
 
-    geracoes = range(1, GERACOES + 1)
-    plt.figure(figsize=(12, 5))
+    plt.figure(figsize=(10,5))
+    plt.plot(geracoes, melhor, label="Melhor Fitness Total", linewidth=2)
+    plt.plot(geracoes, media, label="Média Fitness Total", linewidth=2)
 
-    plt.subplot(1, 2, 1)
-    plt.plot(geracoes, [f[0] for f in historico_fitness], label="Melhor Fitness")
-    plt.plot(geracoes, [f[1] for f in historico_fitness], label="Média Fitness")
+    cores = ["#FF7F0E", "#2CA02C", "#1F77B4"]
+    for i, nome in enumerate(nomes_classes):
+        fit_classe = [f[i] for f in historico_fitness_classes]
+        plt.plot(geracoes, fit_classe, label=f"Fitness {nome}", linestyle='--', color=cores[i])
+
     plt.xlabel("Geração")
     plt.ylabel("Fitness")
-    plt.title("Evolução do Fitness")
-    plt.legend()
+    plt.title("Evolução do Fitness (Total e por Classe)")
     plt.grid(True)
-
-    plt.subplot(1, 2, 2)
-    plt.plot(geracoes, historico_treino, label="Treino")
-    plt.plot(geracoes, historico_teste, label="Teste")
-    plt.xlabel("Geração")
-    plt.ylabel("Acurácia")
-    plt.title("Acurácia por Geração")
     plt.legend()
-    plt.grid(True)
-
     plt.tight_layout()
-    plt.savefig(f"{nome_pasta}/fitness_e_acuracia.png", dpi=150)
+    plt.savefig(f"{nome_pasta}/evolucao_fitness_por_classe.png", dpi=150)
+    plt.show()
     plt.close()
-    print(f"Gráfico salvo em: {nome_pasta}/fitness_e_acuracia.png")
+    print(f"Gráfico de fitness salvo em: {nome_pasta}/evolucao_fitness_por_classe.png")
 
-def animar_prototipos(X_teste, y_teste, nomes_classes, melhores_classificadores, nome_pasta="graficos"):
+def animar_prototipos_2d_com_populacao(X, y, nomes_classes, populacoes, melhores_classificadores, nome_pasta=PASTA_SAIDA):
     os.makedirs(nome_pasta, exist_ok=True)
+    fig, ax = plt.subplots(figsize=(8,6))
+    cores = ["#FF7F0E", "#2CA02C", "#1F77B4"]
 
-    pca = PCA(n_components=2)
-    X_teste_pca = pca.fit_transform(X_teste)
-    vetores_pca = [pca.transform(v) for v in melhores_classificadores]
+    for i in range(len(nomes_classes)):
+        ax.scatter(X[y==i,1], X[y==i,0], alpha=0.5, s=30, color=cores[i], label=nomes_classes[i])
 
-    fig, ax = plt.subplots(figsize=(8, 6))
-    cores = ["red", "green", "blue"]
+    pontos_geracao = ax.scatter([], [], color='black', s=40, alpha=0.5)
+    melhor_plots = [ax.scatter([], [], s=140, color=cores[i], edgecolor='black', linewidth=1.2, marker='X') for i in range(len(nomes_classes))]
 
-    for i in range(3):
-        ax.scatter(X_teste_pca[y_teste == i, 0], X_teste_pca[y_teste == i, 1],
-                   alpha=0.3, color=cores[i], label=nomes_classes[i])
+    texts = [ax.text(0,0,'', fontsize=9, weight='bold') for _ in range(len(nomes_classes))]
 
-    prot = ax.scatter([], [], marker='X', s=100, edgecolor='black', linewidth=1.5)
-    titulo = ax.text(0.5, 1.05, '', transform=ax.transAxes, ha='center', fontsize=14)
-
-    ax.set_xlim(X_teste_pca[:, 0].min() - 3, X_teste_pca[:, 0].max() + 3)
-    ax.set_ylim(X_teste_pca[:, 1].min() - 3, X_teste_pca[:, 1].max() + 3)
-    ax.set_title("Evolução dos Vetores Protótipos (PCA)")
-    ax.set_xlabel("Componente 1")
-    ax.set_ylabel("Componente 2")
+    ax.set_xlabel('Petal width (cm)')
+    ax.set_ylabel('Petal length (cm)')
+    ax.set_title('Evolução dos Protótipos com População')
     ax.legend()
     ax.grid(True)
 
-    def atualizar(frame):
-        pontos = vetores_pca[frame]
-        prot.set_offsets(pontos)
-        prot.set_color(cores)
-        titulo.set_text(f"Geração {frame + 1}")
-        return prot, titulo
+    x_min, x_max = X[:,1].min(), X[:,1].max()
+    y_min, y_max = X[:,0].min(), X[:,0].max()
+    dx = (x_max - x_min) * 0.15
+    dy = (y_max - y_min) * 0.15
+    ax.set_xlim(x_min - dx, x_max + dx)
+    ax.set_ylim(y_min - dy, y_max + dy)
 
-    anim = FuncAnimation(fig, atualizar, frames=len(vetores_pca), interval=200, repeat=False)
-    anim.save(f"{nome_pasta}/evolucao_prototipos.mp4", fps=5, dpi=150)
+    def atualizar(frame):
+        pop = populacoes[frame]
+        melhor = melhores_classificadores[frame]
+
+        # população
+        pop_coords = np.vstack([np.column_stack((p[:,1], p[:,0])) for p in pop])
+        pontos_geracao.set_offsets(pop_coords)
+
+        # melhores protótipos
+        for i, scatter_best in enumerate(melhor_plots):
+            scatter_best.set_offsets([melhor[i,1], melhor[i,0]])
+            texts[i].set_position((melhor[i,1]+0.02*(x_max-x_min), melhor[i,0]+0.02*(y_max-y_min)))
+            texts[i].set_text(nomes_classes[i])
+
+        ax.set_title(f'Geração {frame+1} / {len(melhores_classificadores)}')
+        return [pontos_geracao] + melhor_plots + texts
+
+    anim = FuncAnimation(fig, atualizar, frames=len(melhores_classificadores), interval=300, repeat=False)
+    anim.save(f"{nome_pasta}/evolucao_prototipos_com_populacao.mp4", fps=5, dpi=150)
+    print(f"Animação salva em: {nome_pasta}/evolucao_prototipos_com_populacao.mp4")
+    plt.show()
     plt.close()
-    print(f"Animação salva em: {nome_pasta}/evolucao_prototipos.mp4")
 
 def main():
-    X, y, nomes_classes = carregar_dataset()
+    X, y, nomes = carregar_dataset_2d()
     X_treino, X_teste, y_treino, y_teste = dividir_dataset(X, y)
 
     num_classes = len(np.unique(y))
     num_atributos = X.shape[1]
+    mins = X.min(axis=0)
+    maxs = X.max(axis=0)
 
-    historico_fitness, hist_treino, hist_teste, melhores = evoluir(
-        X_treino, y_treino, X_teste, y_teste, num_classes, num_atributos
+    historico_fitness, historico_fitness_classes, melhores, populacoes_por_geracao = evoluir(
+        X_treino, y_treino, X_teste, y_teste,
+        num_classes, num_atributos, mins, maxs, nomes
     )
 
-    melhor_gen = np.argmax(hist_teste)
-    melhor_clf = melhores[melhor_gen]
-    pred = prever(melhor_clf, X_teste)
-    acc_final = accuracy_score(y_teste, pred)
-
-    print(f"\nAcurácia final no teste: {acc_final:.2f}")
-    print(f"Melhor geração: {melhor_gen + 1}\n\n")
-
-    for i, nome in enumerate(nomes_classes):
-        print(f"Classe {i} ({nome}): {melhor_clf[i]}")
-
-    print('\n')
-    gerar_graficos(historico_fitness, hist_treino, hist_teste)
-    animar_prototipos(X_teste, y_teste, nomes_classes, melhores)
-
+    # gráficos
+    plotar_fitness(historico_fitness, historico_fitness_classes, nomes)
+    # animação
+    animar_prototipos_2d_com_populacao(X_teste, y_teste, nomes, populacoes_por_geracao, melhores)
 
 if __name__ == "__main__":
     main()
+
