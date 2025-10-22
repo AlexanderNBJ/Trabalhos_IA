@@ -1,6 +1,7 @@
 """
     Trabalho IA:    Algoritmo Imunológico (CLONALG) - IRIS 
                     Usando eixo 2D: petal length x petal width
+                    Com Hipermutação nos clones
 
     Autores:    Alexander Neves Barbosa Júnior
                 Davi Paulino Laboissiere Dantas
@@ -22,7 +23,7 @@ np.random.seed(SEED)
 
 FEATURE_INDICES = [2, 3]  # X = petal length, Y = petal width
 N_BEST = 5
-PASTA_SAIDA = 'graficos_2d'
+PASTA_SAIDA = 'graficos_iris'
 
 def carregar_dataset_2d():
     iris = load_iris()
@@ -52,8 +53,12 @@ def fitness_por_classe(individuo, X, y, num_classes):
         fit_classes[c] = sum(np.linalg.norm(individuo[c] - x) for x in Xc)
     return fit_classes
 
-def mutar(individuo, mins, maxs):
-    ruido = np.random.randn(*individuo.shape) * TAXA_MUTACAO
+def mutar_hipermutacao(individuo, mins, maxs, parent_fitness, fitness_min, fitness_max, base_sigma=TAXA_MUTACAO, eps=1e-9):
+    # normaliza: 0 para melhor (fitness_min), 1 para pior (fitness_max)
+    norm = (parent_fitness - fitness_min) / (fitness_max - fitness_min + eps)
+    # escala da mutação aumenta para piores pais
+    sigma = base_sigma * (1.0 + norm * 4.0)
+    ruido = np.random.randn(*individuo.shape) * sigma
     novo = individuo + ruido
     novo = np.clip(novo, mins, maxs)
     return novo
@@ -82,18 +87,24 @@ def evoluir(X_treino, y_treino, X_teste, y_teste, num_classes, num_atributos, mi
         melhores_classificadores.append(melhores[0].copy())
         populacoes_por_geracao.append(populacao.copy())
 
+        # --- clonagem com hipermutação ---
+        fitness_melhores = [fitness(clf, X_treino, y_treino) for clf in melhores]
+        fmin, fmax = min(fitness_melhores), max(fitness_melhores)
+
         clones = []
-        for clf in melhores:
+        for i, clf in enumerate(melhores):
+            pf = fitness_melhores[i]
             for _ in range(NUM_CLONES):
-                clones.append(mutar(clf, mins, maxs))
+                clones.append(mutar_hipermutacao(clf, mins, maxs, pf, fmin, fmax))
 
         populacao = melhores + clones
         if len(populacao) > TAM_POP:
             populacao = selecionar_melhores(populacao, X_treino, y_treino, TAM_POP)
 
-        #fit_classes_texto = ', '.join(f"{nomes_classes[i]}: {fit_classes[i]:.3f}" for i in range(num_classes))
-        print(f"Geração {geracao+1}/{GERACOES} | Melhor Fitness: {melhor_fit} | Média: {media_fit:.3f}")
-        [print(f"{nomes_classes[i]} = {fit_classes[i]}") for i in range(num_classes)]
+        # Print com fitness por classe
+        print(f"Geração {geracao+1}/{GERACOES} | Melhor Fitness: {melhor_fit:} | Média: {media_fit}")
+        for i in range(num_classes):
+            print(f"{nomes_classes[i]} = {fit_classes[i]}")
         print()
 
     return historico_fitness, historico_fitness_classes, melhores_classificadores, populacoes_por_geracao
@@ -134,7 +145,6 @@ def animar_prototipos_2d_com_populacao(X, y, nomes_classes, populacoes, melhores
 
     pontos_geracao = ax.scatter([], [], color='black', s=40, alpha=0.5)
     melhor_plots = [ax.scatter([], [], s=140, color=cores[i], edgecolor='black', linewidth=1.2, marker='X') for i in range(len(nomes_classes))]
-
     texts = [ax.text(0,0,'', fontsize=9, weight='bold') for _ in range(len(nomes_classes))]
 
     ax.set_xlabel('Petal width (cm)')
@@ -194,4 +204,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
